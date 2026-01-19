@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>境外投资税务试算 </title>
+    <link rel="stylesheet" href="https://unpkg.com/element-ui/lib/theme-chalk/index.css">
+    <style>
+        body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; background-color: #f5f7fa; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; background: #fff; padding: 25px; border-radius: 8px; box-shadow: 0 2px 12px 0 rgba(0,0,0,0.1); }
+
+        /* 资金流向颜色 */
+        .amount-pos { color: #F56C6C; font-weight: bold; }
+        .amount-neg { color: #67C23A; font-weight: bold; }
+        .amount-neutral { color: #909399; }
+
+        /* 税务卡片样式 */
+        .tax-card { background: #fff; border: 1px solid #ebeef5; border-radius: 4px; padding: 20px; margin-bottom: 20px; display: flex; align-items: stretch; }
+        .tax-item { flex: 1; text-align: center; border-right: 1px solid #ebeef5; padding: 0 15px; }
+        .tax-item:last-child { border-right: none; }
+        .tax-label { color: #909399; font-size: 14px; margin-bottom: 8px; }
+        .tax-val { font-size: 20px; font-weight: bold; color: #303133; }
+        .tax-val.danger { color: #F56C6C; }
+        .tax-val.success { color: #67C23A; }
+
+        .alert-box { background-color: #fdf6ec; color: #e6a23c; padding: 10px 15px; border-radius: 4px; font-size: 13px; margin-bottom: 15px; line-height: 1.6; }
+    </style>
+</head>
+<body>
+{% raw %}
+<div id="app" class="container">
+
+    <div style="margin-bottom: 20px; border-bottom: 1px solid #ebeef5; padding-bottom: 15px;">
+        <h2 style="margin:0">🧾 境外投资税务试算 (CN Tax Estimate)</h2>
+        <div style="color: #606266; font-size: 14px; margin-top: 10px;">
+            基于长桥证券资金流水，模拟计算中国大陆居民个人所得税（税率 20%）。
+        </div>
+    </div>
+
+    <el-form :inline="true">
+        <el-form-item label="统计区间">
+            <el-date-picker
+                    v-model="dateRange"
+                    type="daterange"
+                    range-separator="至"
+                    start-placeholder="开始"
+                    end-placeholder="结束"
+                    value-format="yyyy-MM-dd">
+            </el-date-picker>
+        </el-form-item>
+        <el-form-item>
+            <el-button type="primary" @click="fetchData" :loading="loading" icon="el-icon-calculator">计算税额
+            </el-button>
+            <el-button type="success" @click="exportCSV" icon="el-icon-download" :disabled="isDataEmpty">导出 CSV
+            </el-button>
+        </el-form-item>
+    </el-form>
+
+    <el-tabs v-model="activeTab" type="card">
+        <el-tab-pane v-for="mkt in markets" :key="mkt" :label="getMarketName(mkt)" :name="mkt">
+
+            <div v-if="results[mkt] && results[mkt].records.length > 0">
+                <div class="alert-box">
+                    <i class="el-icon-warning"></i> <b>免责声明：</b>
+                    此计算基于“资金流水”估算。对于<b>未卖出</b>的持仓，买入成本会被计为负现金流，导致“交易净收益”偏低。
+                    <br>准确的报税请以券商提供的年度结单（Statement）中的“Realized P/L”为准。
+                </div>
+
+                <div class="tax-card">
+                    <div class="tax-item">
+                        <div class="tax-label">📈 交易净收益 (已扣费)</div>
+                        <div :class="['tax-val', results[mkt].tax_report.trade_gain >= 0 ? 'danger' : 'success']">
+                            {{ results[mkt].tax_report.trade_gain }}
+                        </div>
+                        <div style="font-size:12px; color:#C0C4CC; margin-top:4px;">卖出 - 买入 - 费用</div>
+                    </div>
+                    <div class="tax-item">
+                        <div class="tax-label">💰 股息/利息所得</div>
+                        <div class="tax-val danger">{{ results[mkt].tax_report.dividend_gain }}</div>
+                        <div style="font-size:12px; color:#C0C4CC; margin-top:4px;">全额计税</div>
+                    </div>
+                    <div class="tax-item">
+                        <div class="tax-label">🏦 境外已缴税 (抵扣)</div>
+                        <div class="tax-val">{{ results[mkt].tax_report.foreign_tax }}</div>
+                    </div>
+                    <div class="tax-item" style="background-color: #fef0f0; border-radius: 4px;">
+                        <div class="tax-label" style="color:#F56C6C;">🇨🇳 预计中国补税额</div>
+                        <div class="tax-val danger">{{ results[mkt].tax_report.est_china_tax }}</div>
+                        <div style="font-size:12px; color:#F56C6C; margin-top:4px;">按 20% 补差额</div>
+                    </div>
+                </div>
+
+                <el-table :data="getPageData(mkt)" stripe border style="width: 100%; margin-top: 20px;">
+                    <el-table-column prop="time" label="交易时间" width="180"></el-table-column>
+                    <el-table-column label="税务分类" width="120">
+                        <template slot-scope="scope">
+                            <el-tag v-if="scope.row.tax_category === 'dividend'" type="warning" size="small">股息红利
+                            </el-tag>
+                            <el-tag v-else-if="scope.row.tax_category === 'trade_income'" type="danger" size="small">
+                                卖出收入
+                            </el-tag>
+                            <el-tag v-else-if="scope.row.tax_category === 'trade_cost'" type="success" size="small">
+                                买入/费用
+                            </el-tag>
+                            <el-tag v-else-if="scope.row.tax_category === 'foreign_tax'" type="info" size="small">
+                                已缴税款
+                            </el-tag>
+                            <span v-else style="color:#ccc;">-</span>
+                        </template>
+                    </el-table-column>
+                    <el-table-column prop="symbol" label="代码" width="100"></el-table-column>
+                    <el-table-column prop="type_display" label="操作" width="120"></el-table-column>
+                    <el-table-column prop="description" label="备注" show-overflow-tooltip></el-table-column>
+                    <el-table-column label="金额" align="right" width="140">
+                        <template slot-scope="scope">
+                                <span :class="getAmountClass(scope.row)">
+                                    {{ scope.row.amount > 0 ? '+' : '' }}{{ scope.row.amount }}
+                                </span>
+                            <span style="font-size:12px; color:#999;"> {{ scope.row.currency }}</span>
+                        </template>
+                    </el-table-column>
+                </el-table>
+
+                <div style="text-align: right; margin-top: 15px;">
+                    <el-pagination
+                            background
+                            layout="prev, pager, next"
+                            :total="results[mkt].records.length"
+                            :page-size="pageSize"
+                            :current-page.sync="currentPages[mkt]">
+                    </el-pagination>
+                </div>
+            </div>
+
+            <div v-else style="text-align: center; color: #909399; padding: 50px;">
+                请选择日期并点击“计算税额”
+            </div>
+
+        </el-tab-pane>
+    </el-tabs>
+</div>
+{% endraw %}
+<script src="https://unpkg.com/vue@2/dist/vue.js"></script>
+<script src="https://unpkg.com/element-ui/lib/index.js"></script>
+<script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+
+<script>
+    new Vue({
+        el: '#app',
+        data: {
+            loading: false,
+            dateRange: [],
+            activeTab: 'US',
+            markets: ['US', 'HK', 'CN', 'SG', 'OTHER'],
+            pageSize: 10,
+            currentPages: { 'US': 1, 'HK': 1, 'CN': 1, 'SG': 1, 'OTHER': 1 },
+            results: {
+                'US': { records: [], tax_report: { trade_gain:0, dividend_gain:0, foreign_tax:0, est_china_tax:0 } },
+                'HK': { records: [], tax_report: { trade_gain:0, dividend_gain:0, foreign_tax:0, est_china_tax:0 } },
+                'CN': { records: [], tax_report: { trade_gain:0, dividend_gain:0, foreign_tax:0, est_china_tax:0 } },
+                'SG': { records: [], tax_report: { trade_gain:0, dividend_gain:0, foreign_tax:0, est_china_tax:0 } },
+                'OTHER': { records: [], tax_report: { trade_gain:0, dividend_gain:0, foreign_tax:0, est_china_tax:0 } }
+            }
+        },
+                    // 在 Vue 实例 data 后面增加
+        computed: {
+            isDataEmpty() {
+                // 检查是否有任何市场的 records 长度大于 0
+                return !Object.values(this.results).some(mkt => mkt.records && mkt.records.length > 0);
+            }
+        },
+        methods: {
+        exportCSV() {
+if (this.isDataEmpty) return;
+
+// 1. 创建一个新的工作簿 (Workbook)
+const wb = XLSX.utils.book_new();
+
+// 2. 遍历市场，为每个市场创建一个 Sheet
+this.markets.forEach(mkt => {
+    const records = this.results[mkt].records;
+    const taxReport = this.results[mkt].tax_report;
+
+    // 如果该市场没有数据，可以跳过或者创建一个空表
+    if (!records || records.length === 0) return;
+
+    // 3. 构造该页签的数据数组
+    // 首先添加汇总信息
+    let sheetData = [
+        ["市场汇总统计", "", "", "", "", "", ""],
+        ["交易净收益", "股息利息所得", "境外已缴税", "预计中国补税额", "", "", ""],
+        [taxReport.trade_gain, taxReport.dividend_gain, taxReport.foreign_tax, taxReport.est_china_tax, "", "", ""],
+        [], // 空行
+        ["详细流水明细", "", "", "", "", "", ""],
+        ["交易时间", "代码", "操作类型", "税务分类", "备注", "金额", "币种"] // 表头
+    ];
+
+    // 4. 填充明细数据
+    records.forEach(row => {
+        sheetData.push([
+            row.time,
+            row.symbol,
+            row.type_display,
+            row.tax_category,
+            row.description,
+            row.amount,
+            row.currency
+        ]);
+    });
+
+    // 5. 将数组转换为 Sheet 并加入工作簿
+    const ws = XLSX.utils.aoa_to_sheet(sheetData);
+
+    // 设置一点列宽（可选）
+    ws['!cols'] = [{wch: 20}, {wch: 12}, {wch: 12}, {wch: 12}, {wch: 30}, {wch: 12}, {wch: 10}];
+
+    XLSX.utils.book_append_sheet(wb, ws, this.getMarketName(mkt));
+});
+
+// 6. 导出文件
+const dateStr = this.dateRange[0] || 'export';
+XLSX.writeFile(wb, `长桥税务分类报表_${dateStr}.xlsx`);
+this.$message.success('多分页 Excel 导出成功');
+},
+            getMarketName(key) {
+                const map = {'US': '美股 (USD)', 'HK': '港股 (HKD)', 'CN': 'A股 (CNY)', 'SG': '新加坡 (SGD)', 'OTHER': '其他'};
+                return map[key] || key;
+            },
+            getAmountClass(row) {
+                if (!row.is_pl) return 'amount-neutral';
+                return row.amount >= 0 ? 'amount-pos' : 'amount-neg';
+            },
+            fetchData() {
+                if (!this.dateRange || this.dateRange.length < 2) {
+                    this.$message.warning('请选择日期范围');
+                    return;
+                }
+                this.loading = true;
+                axios.post('/api/tax_report', {
+                    start_date: this.dateRange[0],
+                    end_date: this.dateRange[1]
+                }).then(res => {
+                    if (res.data.status === 'success') {
+                        this.results = res.data.data;
+                        // 重置页码
+                        for(let k in this.currentPages) this.currentPages[k] = 1;
+                        this.$message.success('税务估算完成');
+                    } else {
+                        this.$message.error(res.data.message);
+                    }
+                }).catch(err => {
+                    this.$message.error('请求失败');
+                    console.error(err);
+                }).finally(() => {
+                    this.loading = false;
+                });
+            },
+            getPageData(mkt) {
+                const data = this.results[mkt];
+                if (!data || !data.records) return [];
+                const start = (this.currentPages[mkt] - 1) * this.pageSize;
+                return data.records.slice(start, start + this.pageSize);
+            }
+        }
+    })
+</script>
+</body>
+</html>
